@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Socorro, Caí Dentro do Videogame! - Bug Escape</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: #0f051d;
+      color: #ffffff;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      width: 100vw;
+      height: 100vh;
+      font-family: 'Courier New', Courier, monospace;
+      user-select: none;
+      overflow: hidden;
+    }
+
+    /* Container ocupando quase toda a tela */
+    #canvas-container {
+      position: relative;
+      width: 95vw;
+      height: 90vh;
+      box-shadow: 0 0 35px rgba(255, 69, 0, 0.5);
+      border: 4px solid #ff4500;
+      border-radius: 12px;
+      background-color: #000;
+      overflow: hidden;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    #ui-layer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 20px;
+    }
+
+    .top-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 24px;
+      font-weight: bold;
+      text-shadow: 2px 2px 6px #000;
+    }
+
+    #score-display {
+      color: #ffcc00;
+    }
+
+    #high-score-display {
+      color: #ff6600;
+      font-size: 20px;
+    }
+
+    #overlay-screen {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+      background: rgba(0, 0, 0, 0.88);
+      padding: 30px 50px;
+      border-radius: 16px;
+      border: 3px solid #ff4500;
+      pointer-events: auto;
+      box-shadow: 0 0 30px rgba(255, 69, 0, 0.7);
+      max-width: 90%;
+    }
+
+    #overlay-screen h1 {
+      font-size: 32px;
+      color: #ff4500;
+      margin-bottom: 12px;
+      text-shadow: 0 0 12px #ff0000;
+    }
+
+    #overlay-screen p {
+      font-size: 16px;
+      color: #fff;
+      margin-bottom: 10px;
+    }
+
+    .controls-hint {
+      margin-top: 18px;
+      font-size: 14px;
+      color: #aaa;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="canvas-container">
+    <canvas id="gameCanvas"></canvas>
+    <div id="ui-layer">
+      <div class="top-bar">
+        <div id="high-score-display">HI: 00000</div>
+        <div id="score-display">00000</div>
+      </div>
+      <div id="overlay-screen">
+        <h1 id="screen-title">SOCORRO! CAÍ DENTRO DO VIDEOGAME</h1>
+        <p id="screen-subtitle">Chega aos 1000 pontos para vencer e escapar do jogo!</p>
+        <p class="controls-hint">ESPAÇO / SETA CIMA: Pular | SETA BAIXO: Abaixar</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const container = document.getElementById('canvas-container');
+
+    const scoreDisplay = document.getElementById('score-display');
+    const highScoreDisplay = document.getElementById('high-score-display');
+    const overlayScreen = document.getElementById('overlay-screen');
+    const screenTitle = document.getElementById('screen-title');
+    const screenSubtitle = document.getElementById('screen-subtitle');
+
+    // Redimensionamento Dinâmico para Ecrã Quase Cheio
+    function resizeCanvas() {
+      canvas.width = container.clientWidth;
+      canvas.height = container.clientHeight;
+      if (player) {
+        player.groundY = canvas.height - 85;
+        if (!player.isJumping && !player.isDucking) {
+          player.y = player.groundY;
+        }
+      }
+    }
+
+    // Estado do Jogo
+    let isRunning = false;
+    let isGameOver = false;
+    let score = 0;
+    let highScore = localStorage.getItem('dino_high_score') || 0;
+    let gameSpeed = 5.5; // Velocidade mais equilibrada
+    let frameCount = 0;
+
+    highScoreDisplay.textContent = `HI: ${String(Math.floor(highScore)).padStart(5, '0')}`;
+
+    // Áudio Synthesizer (Sons e Música 8-Bit)
+    let audioCtx = null;
+    let isMusicPlaying = false;
+    let noteIndex = 0;
+    let musicInterval = null;
+
+    function initAudio() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
+    }
+
+    function playJumpSound() {
+      if (!audioCtx) return;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'square';
+      osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(400, audioCtx.currentTime + 0.15);
+      gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.15);
+    }
+
+    function playHitSound() {
+      if (!audioCtx) return;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(120, audioCtx.currentTime);
+      osc.frequency.linearRampToValueAtTime(40, audioCtx.currentTime + 0.3);
+      gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+      gain.gain.linearRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.3);
+    }
+
+    function playWinSound() {
+      if (!audioCtx) return;
+      const notes = [261.63, 329.63, 392.00, 523.25];
+      notes.forEach((freq, idx) => {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime + idx * 0.12);
+        gain.gain.setValueAtTime(0.1, audioCtx.currentTime + idx * 0.12);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + idx * 0.12 + 0.2);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start(audioCtx.currentTime + idx * 0.12);
+        osc.stop(audioCtx.currentTime + idx * 0.12 + 0.2);
+      });
+    }
+
+    const melody = [110, 130.81, 146.83, 164.81, 146.83, 130.81, 110, 98];
+    function startMusic() {
+      if (isMusicPlaying) return;
+      initAudio();
+      isMusicPlaying = true;
+      noteIndex = 0;
+
+      musicInterval = setInterval(() => {
+        if (!isMusicPlaying || !audioCtx) return;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'triangle';
+        const freq = melody[noteIndex % melody.length];
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        
+        gain.gain.setValueAtTime(0.03, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.18);
+
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.2);
+
+        noteIndex++;
+      }, 190);
+    }
+
+    function stopMusic() {
+      isMusicPlaying = false;
+      if (musicInterval) clearInterval(musicInterval);
+    }
+
+    // Jogador
+    const player = {
+      x: 90,
+      y: 0,
+      normalWidth: 46,
+      normalHeight: 56,
+      duckWidth: 58,
+      duckHeight: 30,
+      width: 46,
+      height: 56,
+      groundY: 0,
+      velocityY: 0,
+      gravity: 0.7,
+      isJumping: false,
+      isDucking: false,
+      animFrame: 0,
+      
+      reset() {
+        this.groundY = canvas.height - 85;
+        this.y = this.groundY;
+        this.velocityY = 0;
+        this.isJumping = false;
+        this.isDucking = false;
+        this.width = this.normalWidth;
+        this.height = this.normalHeight;
+        this.animFrame = 0;
+      },
+
+      jump() {
+        if (!this.isJumping && !this.isDucking) {
+          this.isJumping = true;
+          this.velocityY = -13.5;
+          playJumpSound();
+        }
+      },
+
+      setDucking(ducking) {
+        if (this.isJumping) return;
+        this.isDucking = ducking;
+        if (ducking) {
+          this.width = this.duckWidth;
+          this.height = this.duckHeight;
+          this.y = this.groundY + (this.normalHeight - this.duckHeight);
+        } else {
+          this.width = this.normalWidth;
+          this.height = this.normalHeight;
+          this.y = this.groundY;
+        }
+      },
+
+      update() {
+        if (this.isJumping) {
+          this.y += this.velocityY;
+          this.velocityY += this.gravity;
+
+          if (this.y >= this.groundY) {
+            this.y = this.groundY;
+            this.isJumping = false;
+          }
+        }
+        if (frameCount % 6 === 0) {
+          this.animFrame = (this.animFrame + 1) % 4;
+        }
+      },
+
+      draw() {
+        ctx.save();
+        ctx.translate(this.x, this.y);
+
+        if (this.isDucking) {
+          // --- ABAIXADO ---
+          ctx.fillStyle = '#778899';
+          ctx.fillRect(-10, 8, 18, 10);
+          
+          ctx.fillStyle = '#ff7700';
+          ctx.fillRect(4, 10, 32, 12);
+          ctx.fillStyle = '#aaaaaa';
+          ctx.fillRect(10, 12, 18, 8);
+
+          ctx.fillStyle = '#555566';
+          ctx.fillRect(34, 14, 16, 8);
+          ctx.fillStyle = '#00ffcc';
+          ctx.fillRect(50, 16, 3, 4);
+
+          ctx.fillStyle = '#ffcc99';
+          ctx.fillRect(22, 0, 14, 10);
+          ctx.fillStyle = '#000000';
+          ctx.fillRect(30, 3, 3, 3);
+          ctx.fillStyle = '#663300';
+          ctx.fillRect(18, -4, 18, 5);
+
+          const legOffset = (this.animFrame % 2 === 0) ? 3 : -3;
+          ctx.fillStyle = '#2244aa';
+          ctx.fillRect(2, 20, 20, 6);
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(2 + legOffset, 24, 10, 6);
+          ctx.fillRect(14 - legOffset, 24, 10, 6);
+
+        } else {
+          // --- EM PÉ ---
+          ctx.fillStyle = '#778899';
+          ctx.fillRect(-12, 14, 10, 24);
+          ctx.fillStyle = '#333';
+          ctx.fillRect(-10, 34, 6, 8);
+
+          if (this.isJumping) {
+            ctx.fillStyle = (frameCount % 2 === 0) ? '#ffcc00' : '#ff3300';
+            ctx.beginPath();
+            ctx.moveTo(-10, 42);
+            ctx.lineTo(-4, 42);
+            ctx.lineTo(-7, 54 + Math.random() * 6);
+            ctx.fill();
+          }
+
+          ctx.fillStyle = '#2244aa';
+          ctx.fillRect(4, 30, 22, 12);
+
+          if (this.isJumping) {
+            ctx.fillStyle = '#ffcc99';
+            ctx.fillRect(4, 40, 8, 8);
+            ctx.fillRect(16, 36, 8, 8);
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(2, 46, 12, 7);
+            ctx.fillRect(18, 42, 12, 7);
+          } else {
+            const legOffset = (this.animFrame % 2 === 0) ? 4 : -4;
+            ctx.fillStyle = '#ffcc99';
+            ctx.fillRect(6 + legOffset, 40, 6, 8);
+            ctx.fillRect(16 - legOffset, 40, 6, 8);
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(4 + legOffset, 47, 11, 7);
+            ctx.fillRect(14 - legOffset, 47, 11, 7);
+            ctx.fillStyle = '#ff0000';
+            ctx.fillRect(6 + legOffset, 48, 3, 3);
+            ctx.fillRect(16 - legOffset, 48, 3, 3);
+          }
+
+          ctx.fillStyle = '#ff7700';
+          ctx.fillRect(2, 12, 26, 20);
+          ctx.fillStyle = '#aaaaaa';
+          ctx.fillRect(6, 14, 18, 14);
+          ctx.fillStyle = '#00ffff';
+          ctx.fillRect(10, 18, 3, 3);
+          ctx.fillRect(16, 18, 3, 3);
+
+          ctx.fillStyle = '#555566';
+          ctx.fillRect(20, 18, 16, 9);
+          ctx.fillStyle = '#00ffcc';
+          ctx.fillRect(34, 20, 3, 5);
+
+          ctx.fillStyle = '#ffcc99';
+          ctx.fillRect(8, 0, 16, 14);
+          ctx.fillStyle = '#000000';
+          ctx.fillRect(18, 4, 3, 4);
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(19, 4, 1, 2);
+
+          ctx.fillStyle = '#663300';
+          ctx.beginPath();
+          ctx.moveTo(6, 4);
+          ctx.lineTo(2, -4);
+          ctx.lineTo(10, 0);
+          ctx.lineTo(12, -7);
+          ctx.lineTo(17, 0);
+          ctx.lineTo(22, -6);
+          ctx.lineTo(24, 2);
+          ctx.lineTo(26, -2);
+          ctx.lineTo(26, 6);
+          ctx.fill();
+        }
+
+        ctx.restore();
+      }
+    };
+
+    // Obstáculos (Baratas com velocidade equilibrada)
+    let obstacles = [];
+    let nextObstacleTimer = 0;
+
+    function spawnObstacle() {
+      const isFlying = Math.random() > 0.45;
+      const obstacle = {
+        x: canvas.width + 20,
+        // Barata voadora alinhada para exigir agachamento
+        y: isFlying ? player.groundY + 5 : player.groundY + 30,
+        width: isFlying ? 42 : 44,
+        height: isFlying ? 24 : 24,
+        isFlying: isFlying,
+        animFrame: 0,
+        
+        update() {
+          this.x -= gameSpeed;
+          this.animFrame = (this.animFrame + 1) % 4;
+        },
+
+        draw() {
+          ctx.save();
+          ctx.translate(this.x, this.y);
+
+          ctx.fillStyle = '#3a1e05';
+          ctx.beginPath();
+          ctx.ellipse(this.width / 2, this.height / 2, this.width / 2, this.height / 3, 0, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = '#5c330a';
+          ctx.beginPath();
+          ctx.ellipse(this.width / 2 - 2, this.height / 2 - 2, this.width / 3, this.height / 5, 0, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.strokeStyle = '#220000';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(4, this.height / 3);
+          ctx.lineTo(-8, -4 + (frameCount % 4));
+          ctx.moveTo(4, this.height / 2);
+          ctx.lineTo(-6, this.height + 4);
+          ctx.stroke();
+
+          ctx.strokeStyle = '#1a0d02';
+          ctx.lineWidth = 2;
+          const legMove = (this.animFrame % 2 === 0) ? 3 : -3;
+          for (let i = 0; i < 3; i++) {
+            const posX = 10 + i * 9;
+            ctx.beginPath();
+            ctx.moveTo(posX, this.height / 2);
+            ctx.lineTo(posX + legMove, this.height + 4);
+            ctx.stroke();
+          }
+
+          if (this.isFlying || frameCount % 2 === 0) {
+            ctx.fillStyle = 'rgba(200, 180, 130, 0.6)';
+            ctx.beginPath();
+            const wingY = this.isFlying ? -10 * Math.sin(frameCount * 0.8) : -4;
+            ctx.ellipse(this.width / 2, 2 + wingY, this.width / 2, 6, 0.2, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          ctx.fillStyle = '#ff0000';
+          ctx.fillRect(2, 4, 3, 3);
+
+          ctx.restore();
+        }
+      };
+      obstacles.push(obstacle);
+    }
+
+    // Fundo
+    let bgOffsetFar = 0;
+    let flames = [];
+
+    function initFlames() {
+      flames = Array.from({ length: 35 }, () => ({
+        x: Math.random() * canvas.width,
+        y: canvas.height - 40 + Math.random() * 20,
+        size: 15 + Math.random() * 25,
+        speed: 1 + Math.random() * 2
+      }));
+    }
+
+    function drawBackground() {
+      const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+      grad.addColorStop(0, '#1a0000');
+      grad.addColorStop(0.6, '#660000');
+      grad.addColorStop(1, '#ff3300');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      bgOffsetFar = (bgOffsetFar + gameSpeed * 0.2) % 200;
+      ctx.fillStyle = '#2b0404';
+      for (let i = -1; i < Math.ceil(canvas.width / 160) + 1; i++) {
+        const x = i * 160 - bgOffsetFar;
+        ctx.fillRect(x, canvas.height - 200, 110, 170);
+        ctx.fillStyle = '#ff9900';
+        if ((i + 3) % 2 === 0) ctx.fillRect(x + 20, canvas.height - 180, 15, 20);
+        if (i % 2 === 0) ctx.fillRect(x + 65, canvas.height - 150, 15, 25);
+        ctx.fillStyle = '#2b0404';
+      }
+
+      flames.forEach(f => {
+        f.y -= f.speed;
+        if (f.y < canvas.height - 120) {
+          f.y = canvas.height - 30 + Math.random() * 20;
+          f.x = Math.random() * canvas.width;
+        }
+        ctx.fillStyle = (Math.random() > 0.5) ? '#ffcc00' : '#ff3300';
+        ctx.beginPath();
+        ctx.arc(f.x, f.y, f.size * 0.5, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // Chão
+      ctx.fillStyle = '#110500';
+      ctx.fillRect(0, canvas.height - 30, canvas.width, 30);
+      ctx.fillStyle = '#ff4500';
+      ctx.fillRect(0, canvas.height - 32, canvas.width, 3);
+    }
+
+    // Loop Principal
+    function gameLoop() {
+      if (!isRunning) return;
+
+      frameCount++;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      drawBackground();
+
+      player.update();
+      player.draw();
+
+      nextObstacleTimer++;
+      // Intervalo mais espaçado para não sobrecarregar
+      const minInterval = Math.max(35, 60 - Math.floor(score / 40));
+      if (nextObstacleTimer > minInterval + Math.random() * 30) {
+        spawnObstacle();
+        nextObstacleTimer = 0;
+      }
+
+      for (let i = obstacles.length - 1; i >= 0; i--) {
+        const obs = obstacles[i];
+        obs.update();
+        obs.draw();
+
+        const pBox = { x: player.x - 2, y: player.y + 4, w: player.width - 4, h: player.height - 6 };
+        const oBox = { x: obs.x + 4, y: obs.y + 4, w: obs.width - 8, h: obs.height - 8 };
+
+        if (
+          pBox.x < oBox.x + oBox.w &&
+          pBox.x + pBox.w > oBox.x &&
+          pBox.y < oBox.y + oBox.h &&
+          pBox.y + pBox.h > oBox.y
+        ) {
+          triggerGameOver();
+          return;
+        }
+
+        if (obs.x + obs.width < -30) {
+          obstacles.splice(i, 1);
+        }
+      }
+
+      // Pontuação e velocidade equilibradas
+      score += 0.25;
+      scoreDisplay.textContent = String(Math.floor(score)).padStart(5, '0');
+      gameSpeed = 5.5 + Math.floor(score / 70) * 0.5;
+
+      if (score >= 1000) {
+        triggerWin();
+        return;
+      }
+
+      requestAnimationFrame(gameLoop);
+    }
+
+    function triggerGameOver() {
+      isRunning = false;
+      isGameOver = true;
+      stopMusic();
+      playHitSound();
+
+      if (score > highScore) {
+        highScore = score;
+        localStorage.setItem('dino_high_score', highScore);
+        highScoreDisplay.textContent = `HI: ${String(Math.floor(highScore)).padStart(5, '0')}`;
+      }
+
+      screenTitle.textContent = 'GAME OVER!';
+      screenSubtitle.textContent = `Fizeste ${Math.floor(score)} pontos! Tenta novamente.`;
+      overlayScreen.style.display = 'block';
+    }
+
+    function triggerWin() {
+      isRunning = false;
+      isGameOver = true;
+      stopMusic();
+      playWinSound();
+
+      if (score > highScore) {
+        highScore = score;
+        localStorage.setItem('dino_high_score', highScore);
+        highScoreDisplay.textContent = `HI: ${String(Math.floor(highScore)).padStart(5, '0')}`;
+      }
+
+      screenTitle.textContent = 'PARABÉNS! VENCESTE!';
+      screenSubtitle.textContent = `Conseguiste 1000 pontos e escapaste do videogame!`;
+      overlayScreen.style.display = 'block';
+    }
+
+    function resetGame() {
+      obstacles = [];
+      score = 0;
+      gameSpeed = 5.5;
+      frameCount = 0;
+      nextObstacleTimer = 0;
+      player.reset();
+      scoreDisplay.textContent = '00000';
+      isGameOver = false;
+      isRunning = true;
+      overlayScreen.style.display = 'none';
+
+      startMusic();
+      gameLoop();
+    }
+
+    function handleAction() {
+      initAudio();
+      if (!isRunning || isGameOver) {
+        resetGame();
+      } else {
+        player.jump();
+      }
+    }
+
+    // Input Handlers
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') {
+        e.preventDefault();
+        handleAction();
+      } else if (e.code === 'ArrowDown' || e.code === 'KeyS') {
+        e.preventDefault();
+        if (isRunning && !isGameOver) {
+          player.setDucking(true);
+        }
+      }
+    });
+
+    window.addEventListener('keyup', (e) => {
+      if (e.code === 'ArrowDown' || e.code === 'KeyS') {
+        player.setDucking(false);
+      }
+    });
+
+    container.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      handleAction();
+    });
+
+    container.addEventListener('mousedown', (e) => {
+      handleAction();
+    });
+
+    window.addEventListener('resize', () => {
+      resizeCanvas();
+      initFlames();
+    });
+
+    // Inicialização
+    resizeCanvas();
+    initFlames();
+    drawBackground();
+  </script>
+</body>
+</html>
